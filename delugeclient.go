@@ -111,7 +111,7 @@ func (c *Client) resetTimeout() error {
 	return c.conn.SetDeadline(time.Now().Add(c.settings.ReadWriteTimeout))
 }
 
-func (c *Client) rpc(methodName string, args rencode.List, kwargs rencode.Dictionary) (*DelugeResponse, error) {
+func (c *Client) Rpc(methodName string, args rencode.List, kwargs rencode.Dictionary) (*DelugeResponse, error) {
 	// generate serial
 	c.serial++
 	if c.serial == math.MaxInt64 {
@@ -246,7 +246,7 @@ func (c *Client) Connect() error {
 	}
 
 	// perform login
-	resp, err := c.rpc("daemon.login", rencode.NewList(c.settings.Login, c.settings.Password), rencode.Dictionary{})
+	resp, err := c.Rpc("daemon.login", rencode.NewList(c.settings.Login, c.settings.Password), rencode.Dictionary{})
 	if err != nil {
 		return err
 	}
@@ -269,7 +269,7 @@ func (c *Client) Connect() error {
 
 // MethodsList returns a list of available methods on server.
 func (c *Client) MethodsList() ([]string, error) {
-	resp, err := c.rpc("daemon.get_method_list", rencode.List{}, rencode.Dictionary{})
+	resp, err := c.Rpc("daemon.get_method_list", rencode.List{}, rencode.Dictionary{})
 	if err != nil {
 		return []string{}, err
 	}
@@ -292,7 +292,7 @@ func (c *Client) MethodsList() ([]string, error) {
 
 // DaemonVersion returns the running daemon version.
 func (c *Client) DaemonVersion() (string, error) {
-	resp, err := c.rpc("daemon.info", rencode.List{}, rencode.Dictionary{})
+	resp, err := c.Rpc("daemon.info", rencode.List{}, rencode.Dictionary{})
 	if err != nil {
 		return "", err
 	}
@@ -309,13 +309,32 @@ func (c *Client) DaemonVersion() (string, error) {
 	return info, nil
 }
 
-// AddTorrentMagnet adds a torrent via magnet URI and returns the torrent hash.
-func (c *Client) AddTorrentMagnet(magnetURI string) (string, error) {
-	var args rencode.List
-	args.Add(magnetURI, rencode.Dictionary{})
+type Options map[string]interface{}
 
-	// perform login
-	resp, err := c.rpc("core.add_torrent_magnet", args, rencode.Dictionary{})
+func mapToRencodeDictionary(m map[string]interface{}) rencode.Dictionary {
+	var dict rencode.Dictionary
+	for k, v := range m {
+		dict.Add(k, v)
+	}
+
+	return dict
+}
+
+func sliceToRencodeList(s []string) rencode.List {
+	var list rencode.List
+	for _, v := range s {
+		list.Add(v)
+	}
+
+	return list
+}
+
+// AddTorrentMagnet adds a torrent via magnet URI and returns the torrent hash.
+func (c *Client) AddTorrentMagnet(magnetURI string, options Options) (string, error) {
+	var args rencode.List
+	args.Add(magnetURI, mapToRencodeDictionary(options))
+
+	resp, err := c.Rpc("core.add_torrent_magnet", args, rencode.Dictionary{})
 	if err != nil {
 		return "", err
 	}
@@ -332,4 +351,159 @@ func (c *Client) AddTorrentMagnet(magnetURI string) (string, error) {
 		return "", nil
 	}
 	return string(torrentHash.([]uint8)), nil
+}
+
+// AddTorrentURL adds a torrent via a URL and returns the torrent hash.
+func (c *Client) AddTorrentURL(url string, options Options) (string, error) {
+	var args rencode.List
+	args.Add(url, mapToRencodeDictionary(options))
+
+	resp, err := c.Rpc("core.add_torrent_url", args, rencode.Dictionary{})
+	if err != nil {
+		return "", err
+	}
+	if resp.IsError() {
+		return "", RPCError{resp.String()}
+	}
+
+	// returned hash may be nil if torrent was already added
+	torrentHash, err := resp.returnValue.Get(0)
+	if err != nil {
+		return "", err
+	}
+	if torrentHash == nil {
+		return "", nil
+	}
+	return string(torrentHash.([]uint8)), nil
+}
+
+func (c *Client) MoveStorage(torrentIDs []string, dest string) error {
+	var args rencode.List
+	args.Add(sliceToRencodeList(torrentIDs), dest)
+
+	resp, err := c.Rpc("core.move_storage", args, rencode.Dictionary{})
+	if err != nil {
+		return err
+	}
+	if resp.IsError() {
+		return RPCError{resp.String()}
+	}
+
+	return err
+}
+
+func (c *Client) RemoveTorrent(torrentID string, removeData bool) (bool, error) {
+	var args rencode.List
+	args.Add(torrentID, removeData)
+
+	resp, err := c.Rpc("core.remove_torrent", args, rencode.Dictionary{})
+	if err != nil {
+		return false, err
+	}
+	if resp.IsError() {
+		return false, RPCError{resp.String()}
+	}
+
+	return true, nil
+}
+
+func (c *Client) GetTorrentStatus(torrentID string, keys []string, diff bool) (map[string]interface{}, error) {
+	var args rencode.List
+	args.Add(torrentID, sliceToRencodeList(keys), diff)
+	resp, err := c.Rpc("core.get_torrent_status", args, rencode.Dictionary{})
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError() {
+		return nil, RPCError{resp.String()}
+	}
+
+	var statusDict rencode.Dictionary
+	err = resp.returnValue.Scan(&statusDict)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]interface{}, statusDict.Length())
+	for i := 0; i < statusDict.Length(); i++ {
+		key := string(statusDict.Keys()[i].([]byte))
+		var value interface{}
+		value = statusDict.Values()[i]
+		if v, ok := value.([]byte); ok {
+			value = string(v)
+		}
+		result[key] = value
+	}
+
+	return result, nil
+}
+
+func (c *Client) GetTorrentsStatus(filter map[string][]string, keys []string, diff bool) (map[string]interface{}, error) {
+	log.Printf("GetTorrentsStatus filter: %#v \n", filter)
+	var filterDict rencode.Dictionary
+	for k, v := range filter {
+		filterDict.Add(k, sliceToRencodeList(v))
+	}
+
+	var args rencode.List
+	args.Add(filterDict, sliceToRencodeList(keys), diff)
+	log.Printf("GetTorrentsStatus args: %#v \n", args)
+	resp, err := c.Rpc("core.get_torrents_status", args, rencode.Dictionary{})
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError() {
+		return nil, RPCError{resp.String()}
+	}
+
+	var resultDict rencode.Dictionary
+	err = resp.returnValue.Scan(&resultDict)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("GetTorrentsStatus resultDict: %#v \n", resultDict)
+	result := make(map[string]interface{}, resultDict.Length())
+	for i := 0; i < resultDict.Length(); i++ {
+		tid := string(resultDict.Keys()[i].([]byte))
+
+		statusDict := resultDict.Values()[i].(rencode.Dictionary)
+		statusMap := make(map[string]interface{}, statusDict.Length())
+		for j := 0; j < statusDict.Length(); j++ {
+			key := string(statusDict.Keys()[j].([]byte))
+			var value interface{}
+			value = statusDict.Values()[j]
+			if v, ok := value.([]byte); ok {
+				value = string(v)
+			}
+			statusMap[key] = value
+		}
+
+		result[tid] = statusMap
+	}
+
+	log.Printf("GetTorrentsStatus result: %#v \n", result)
+
+	return result, nil
+}
+
+func (c *Client) GetSessionState() ([]string, error) {
+	resp, err := c.Rpc("core.get_session_state", rencode.List{}, rencode.Dictionary{})
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError() {
+		return nil, RPCError{resp.String()}
+	}
+
+	var idList rencode.List
+	err = resp.returnValue.Scan(&idList)
+	if err != nil {
+		return []string{}, err
+	}
+	result := make([]string, idList.Length())
+	for i, m := range idList.Values() {
+		result[i] = string(m.([]byte))
+	}
+
+	return result, nil
 }
