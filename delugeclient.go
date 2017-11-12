@@ -439,7 +439,6 @@ func (c *Client) GetTorrentStatus(torrentID string, keys []string, diff bool) (m
 }
 
 func (c *Client) GetTorrentsStatus(filter map[string][]string, keys []string, diff bool) (map[string]interface{}, error) {
-	log.Printf("GetTorrentsStatus filter: %#v \n", filter)
 	var filterDict rencode.Dictionary
 	for k, v := range filter {
 		filterDict.Add(k, sliceToRencodeList(v))
@@ -447,7 +446,6 @@ func (c *Client) GetTorrentsStatus(filter map[string][]string, keys []string, di
 
 	var args rencode.List
 	args.Add(filterDict, sliceToRencodeList(keys), diff)
-	log.Printf("GetTorrentsStatus args: %#v \n", args)
 	resp, err := c.Rpc("core.get_torrents_status", args, rencode.Dictionary{})
 	if err != nil {
 		return nil, err
@@ -461,7 +459,6 @@ func (c *Client) GetTorrentsStatus(filter map[string][]string, keys []string, di
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("GetTorrentsStatus resultDict: %#v \n", resultDict)
 	result := make(map[string]interface{}, resultDict.Length())
 	for i := 0; i < resultDict.Length(); i++ {
 		tid := string(resultDict.Keys()[i].([]byte))
@@ -480,8 +477,6 @@ func (c *Client) GetTorrentsStatus(filter map[string][]string, keys []string, di
 
 		result[tid] = statusMap
 	}
-
-	log.Printf("GetTorrentsStatus result: %#v \n", result)
 
 	return result, nil
 }
